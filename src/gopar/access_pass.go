@@ -105,6 +105,32 @@ func NewAccessPassData() *AccessPassData {
 
 type AccessExprFn func(node ast.Node, t AccessType)
 
+func parseLinearIndex(ident *Identifier, i *ast.BinaryExpr) (err error) {
+	switch i.Op.(type) {
+	case *token.Token.ADD:
+		switch l := i.X.(type) {
+			case *ast.Ident:
+				if ident.isIndexed && ident.index != l.Name {
+					err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+					ident.isIndexed = false
+					ident.index = nil
+					return
+				}
+				ident.isIndexed = true
+				ident.index = l.Name
+				ident.a += 1
+			case *ast.
+	case *token.Token.SUB:
+		// placeholder
+	case *token.Token.MUL:
+		// placeholder
+	default:
+		err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+	}
+
+	return
+}
+
 func AccessIdentBuild(group *IdentifierGroup, expr ast.Node, fn AccessExprFn) (err error) {
 	var ident Identifier
 	// deal with pointers and addresses first
@@ -149,6 +175,10 @@ func AccessIdentBuild(group *IdentifierGroup, expr ast.Node, fn AccessExprFn) (e
 		case *ast.Ident:
 			ident.index = i.Name
 			ident.isIndexed = true
+			ident.a = 1
+			ident.b = 0
+		case *ast.BinaryExpr:
+			err = parseLinearIndex(ident, i)
 		default:
 			// can't resolve array access, record for the entire array
 			err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)

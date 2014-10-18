@@ -131,6 +131,8 @@ func main() {
 	goparPath, _ := exec.LookPath(os.Args[0])
 	goparRoot, _ := filepath.Abs(path.Clean(path.Dir(goparPath) + "/../"))
 	cmd := exec.Command("go", compilecmd, compilepkg)
+	fmt.Println(compilecmd)
+	fmt.Println(compilepkg)
 	env := os.Environ()
 	for i, _ := range env {
 		if strings.HasPrefix(env[i], "GOPATH=") {

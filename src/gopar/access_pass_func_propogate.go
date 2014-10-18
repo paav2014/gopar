@@ -249,6 +249,10 @@ func (v AccessPassFuncPropogateVisitor) Visit(node ast.Node) (w BasicBlockVisito
 		// builtin types (slice, map, chan), pointers
 
 		for _, argName := range arg.Names {
+			if len(call.Args) <= pos {
+				// TODO: Handle "..." syntax (varargs), in which the number of arguments is unknown
+				break
+			}
 			callArg := call.Args[pos]
 			if writeThrough {
 				propogateFn(callArg, arg, argName)
