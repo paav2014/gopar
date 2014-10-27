@@ -45,8 +45,10 @@ const (
 type Identifier struct {
 	id        string
 	refType   ReferenceType
-	isIndexed bool   // true if this is an indexed identifier
-	index     string // single identifier [idx] support for now
+	isIndexed bool   // true if this is an indexed identifier 
+	index     string // single identifier [a*idx + b] support for now
+	a int64
+	b int64
 }
 
 func (i *Identifier) Equals(i2 Identifier) bool {
@@ -105,29 +107,119 @@ func NewAccessPassData() *AccessPassData {
 
 type AccessExprFn func(node ast.Node, t AccessType)
 
-func parseLinearIndex(ident *Identifier, i *ast.BinaryExpr) (err error) {
-	switch i.Op.(type) {
-	case *token.Token.ADD:
-		switch l := i.X.(type) {
-			case *ast.Ident:
-				if ident.isIndexed && ident.index != l.Name {
-					err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-					ident.isIndexed = false
-					ident.index = nil
-					return
-				}
-				ident.isIndexed = true
-				ident.index = l.Name
-				ident.a += 1
-			case *ast.
-	case *token.Token.SUB:
-		// placeholder
-	case *token.Token.MUL:
-		// placeholder
+func parseLinearIndex(ident *Identifier, expr ast.Expr) (err error) {
+	switch i := expr.(type) {
+    case *ast.Ident:
+        ident.index = i.Name
+    	ident.isIndexed = true
+    	ident.a += 1
+    case *ast.BasicLit:
+        if i.Kind != token.INT{
+            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+            ident.isIndexed = false
+        	ident.index = ""
+        	return
+        }
+        
+        val, err := strconv.ParseInt(i.Value, 10, 64)
+        if err != nil {
+            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+            return err
+        }
+        ident.b += val
+    case *ast.BinaryExpr:
+    	//var b *ast.BinaryExpr = i.(*ast.BinaryExpr)
+    	switch i.Op.String() {
+    	case "-":
+    		// placeholder
+    	case "+":
+    		err = parseLinearIndex(ident, i.X)
+    		if err != nil {
+    		    return
+    		}
+    		err = parseLinearIndex(ident, i.Y)
+    		if err != nil {
+    		    return
+    		}
+    	case "*":
+    		switch l := i.X.(type) {
+    		case *ast.Ident:
+    			if ident.isIndexed && ident.index != l.Name {
+    				err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+    				ident.isIndexed = false
+    				ident.index = ""
+    				return
+    			}
+    			ident.isIndexed = true
+    			ident.index = l.Name
+    			
+    			switch r := i.Y.(type) {
+    			    case *ast.BasicLit:
+    			        if r.Kind != token.INT{
+    			            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+    			            ident.isIndexed = false
+    			        	ident.index = ""
+    			        	return
+    			        }
+    			        val, err := strconv.ParseInt(r.Value, 10, 64)
+                        if err != nil {
+                            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+                            return err
+                        }
+                        
+    			        ident.a += val
+    			    default:
+    			        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+    			        ident.isIndexed = false
+    			        ident.index = ""
+    			        return
+    			}
+			case *ast.BasicLit:
+			    switch r := i.Y.(type) {
+			    case *ast.Ident:
+			    
+			        if ident.isIndexed && ident.index != r.Name {
+    					err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+    					ident.isIndexed = false
+    					ident.index = ""
+    					return
+    				}
+    				ident.isIndexed = true
+    				ident.index = r.Name
+			        
+			        if l.Kind != token.INT{
+			            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+			            ident.isIndexed = false
+			        	ident.index = ""
+			        	return
+			        }
+			        
+			        val, err := strconv.ParseInt(l.Value, 10, 64)
+                    if err != nil {
+                        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+                        return err
+                    }
+                    
+			        ident.a += val
+			    default:
+			        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+			        ident.isIndexed = false
+			        ident.index = ""
+			        return
+			    }
+			//case *ast.BinaryExpr:
+			default:
+                err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+                return
+            }
+        default:
+		    err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+		    return
+	    }
 	default:
 		err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+		return
 	}
-
 	return
 }
 
@@ -171,18 +263,8 @@ func AccessIdentBuild(group *IdentifierGroup, expr ast.Node, fn AccessExprFn) (e
 		if fn != nil {
 			fn(t.Index, ReadAccess)
 		}
-		switch i := t.Index.(type) {
-		case *ast.Ident:
-			ident.index = i.Name
-			ident.isIndexed = true
-			ident.a = 1
-			ident.b = 0
-		case *ast.BinaryExpr:
-			err = parseLinearIndex(ident, i)
-		default:
-			// can't resolve array access, record for the entire array
-			err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-		}
+		err = parseLinearIndex(&ident, t.Index)
+		
 	case *ast.CompositeLit:
 		// ignore, we're building a type expression, no accesses here
 	case *ast.CallExpr:
