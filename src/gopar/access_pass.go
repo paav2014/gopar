@@ -110,6 +110,12 @@ type AccessExprFn func(node ast.Node, t AccessType)
 func parseLinearIndex(ident *Identifier, expr ast.Expr) (err error) {
 	switch i := expr.(type) {
     case *ast.Ident:
+        if ident.isIndexed && ident.index != i.Name {
+    		err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+    		ident.isIndexed = false
+    		ident.index = ""
+    		return
+    	}
         ident.index = i.Name
     	ident.isIndexed = true
     	ident.a += 1
@@ -121,6 +127,8 @@ func parseLinearIndex(ident *Identifier, expr ast.Expr) (err error) {
         	return
         }
         
+        
+        // 0x4234?
         val, err := strconv.ParseInt(i.Value, 10, 64)
         if err != nil {
             err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
