@@ -8,7 +8,7 @@
 //     i = 0
 //     for i, v = range array {
 //     }
-//     i and v should equal 
+//     i and v should equal
 
 package main
 
@@ -202,6 +202,54 @@ func canParallelize(loop *BasicBlock, resolver Resolver) (info *ParallelLoopInfo
 		}
 	}
 
+	type LinearAccess struct {
+		index   string
+		coeffs  AccessCoeffs
+		depType DependencyType
+	}
+
+	listCoeffs := make(map[string][]LinearAccess)
+	writes := make(map[string]bool)
+
+	for _, dep := range dependencyData.deps {
+		// ignore variables defined in the loop statement
+		if _, ok := blockDefines[dep.group[0].id]; ok {
+			continue
+		}
+
+		switch dep.depType {
+		case ReadWrite, WriteFirst:
+			// each read and write must be indexed by the iteration variable
+			// a[1][idx] ??
+			indexed := false
+			key := ""
+
+			for _, part := range dep.group {
+				key += ";" + part.id
+				if part.isIndexed {
+					if part.index == info.indexVar {
+						listCoeffs[key] = append(listCoeffs[key], LinearAccess{part.index, part.coeffs, dep.depType})
+						writes[key] = true
+						indexed = true
+						break
+					} else {
+						err = fmt.Errorf("%s crosses iteration bounds with index '%s'", dep.String(), part.index)
+						return
+					}
+				}
+			}
+			if !indexed {
+				err = fmt.Errorf("%s is accessed by all iterations", dep.String())
+				return
+			}
+			//case WriteFirst:
+			// TODO: only privatize simple variables
+
+			//info.privatize = append(info.privatize, dep)
+		}
+	}
+
+	// Look for ReadOnly dependencies
 	for _, dep := range dependencyData.deps {
 		// ignore variables defined in the loop statement
 		if _, ok := blockDefines[dep.group[0].id]; ok {
@@ -210,30 +258,41 @@ func canParallelize(loop *BasicBlock, resolver Resolver) (info *ParallelLoopInfo
 
 		switch dep.depType {
 		case ReadOnly:
-			// nothing
-		case ReadWrite, WriteFirst:
-			// each read and write must be indexed by the iteration variable
-			// a[1][idx] ??
-			iterationOnly := false
+			key := ""
 			for _, part := range dep.group {
+				key += ";" + part.id
 				if part.isIndexed {
-					if part.index == info.indexVar {
-						iterationOnly = true
-						break // everything under this is fine
-					} else {
-						err = fmt.Errorf("%s crosses iteration bounds with index '%s'", dep.String(), part.index)
+					// Record the coefficients
+					listCoeffs[key] = append(listCoeffs[key], LinearAccess{part.index, part.coeffs, dep.depType})
+					break
+				} else {
+					// Look if there was a write; if so, we now read the whole array - can't parallelize this!
+					if writes[key] {
+						err = fmt.Errorf("%s is read as a whole, but written somewhere\n", key)
 						return
 					}
 				}
 			}
-			if !iterationOnly {
-				err = fmt.Errorf("%s is accessed by all iterations", dep.String())
-				return
-			}
-			//case WriteFirst:
-			// TODO: only privatize simple variables
+		}
+	}
 
-			//info.privatize = append(info.privatize, dep)
+	// Do a GCD test for every pair of coefficients that aren't ReadOnly
+	for key := range listCoeffs {
+		for _, la := range listCoeffs[key] {
+			for _, la2 := range listCoeffs[key] {
+				if la == la2 {
+					continue
+				}
+				if la.index != la2.index {
+					err = fmt.Errorf("Two indices: %v %v for access %v\n", la.index, la2.index, key)
+					return
+				}
+				if !(la.depType == ReadOnly && la2.depType == ReadOnly) && GcdTest(la2.coeffs.b-la.coeffs.b, la.coeffs.a, la2.coeffs.a) {
+					err = fmt.Errorf("Dependency detected with GCD test for a='%v', b='%v', c='%v', d='%v' with access '%s'",
+						la.coeffs.a, la.coeffs.b, la2.coeffs.a, la2.coeffs.b, key)
+					return
+				}
+			}
 		}
 	}
 

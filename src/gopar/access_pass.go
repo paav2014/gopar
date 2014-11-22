@@ -42,13 +42,22 @@ const (
 	AddressOf                 // &a
 )
 
+// a*INDEX + b
+type AccessCoeffs struct {
+	a int
+	b int
+}
+
+func (ac *AccessCoeffs) Equals(ac2 AccessCoeffs) bool {
+	return ac.a == ac2.a && ac.b == ac2.b
+}
+
 type Identifier struct {
 	id        string
 	refType   ReferenceType
-	isIndexed bool   // true if this is an indexed identifier 
+	isIndexed bool   // true if this is an indexed identifier
 	index     string // single identifier [a*idx + b] support for now
-	a int64
-	b int64
+	coeffs    AccessCoeffs
 }
 
 func (i *Identifier) Equals(i2 Identifier) bool {
@@ -58,7 +67,7 @@ func (i *Identifier) Equals(i2 Identifier) bool {
 	if i.isIndexed != i2.isIndexed {
 		return false // one is indexed, the other isn't
 	}
-	if i.isIndexed && i.index != i2.index {
+	if i.isIndexed && (i.index != i2.index || i.coeffs != i2.coeffs) {
 		return false // index doesn't match
 	}
 	if i.refType != i2.refType {
@@ -84,7 +93,11 @@ func (ig *IdentifierGroup) String() string {
 		buffer.WriteString(i.id)
 		if i.isIndexed {
 			buffer.WriteString("[")
+			buffer.WriteString(strconv.Itoa(i.coeffs.a))
+			buffer.WriteString("*")
 			buffer.WriteString(i.index)
+			buffer.WriteString(" + ")
+			buffer.WriteString(strconv.Itoa(i.coeffs.b))
 			buffer.WriteString("]")
 		}
 		buffer.WriteString(".")
@@ -107,125 +120,132 @@ func NewAccessPassData() *AccessPassData {
 
 type AccessExprFn func(node ast.Node, t AccessType)
 
-func parseLinearIndex(ident *Identifier, expr ast.Expr) (err error) {
+func parseLinearIndex(expr ast.Expr) (ac AccessCoeffs, id string, err error) {
+	ac.a = 0
+	ac.b = 0
+	id = ""
+
 	switch i := expr.(type) {
-    case *ast.Ident:
-        if ident.isIndexed && ident.index != i.Name {
-    		err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-    		ident.isIndexed = false
-    		ident.index = ""
-    		return
-    	}
-        ident.index = i.Name
-    	ident.isIndexed = true
-    	ident.a += 1
-    case *ast.BasicLit:
-        if i.Kind != token.INT{
-            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-            ident.isIndexed = false
-        	ident.index = ""
-        	return
-        }
-        
-        
-        // 0x4234?
-        val, err := strconv.ParseInt(i.Value, 10, 64)
-        if err != nil {
-            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-            return err
-        }
-        ident.b += val
-    case *ast.BinaryExpr:
-    	//var b *ast.BinaryExpr = i.(*ast.BinaryExpr)
-    	switch i.Op.String() {
-    	case "-":
-    		// placeholder
-    	case "+":
-    		err = parseLinearIndex(ident, i.X)
-    		if err != nil {
-    		    return
-    		}
-    		err = parseLinearIndex(ident, i.Y)
-    		if err != nil {
-    		    return
-    		}
-    	case "*":
-    		switch l := i.X.(type) {
-    		case *ast.Ident:
-    			if ident.isIndexed && ident.index != l.Name {
-    				err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-    				ident.isIndexed = false
-    				ident.index = ""
-    				return
-    			}
-    			ident.isIndexed = true
-    			ident.index = l.Name
-    			
-    			switch r := i.Y.(type) {
-    			    case *ast.BasicLit:
-    			        if r.Kind != token.INT{
-    			            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-    			            ident.isIndexed = false
-    			        	ident.index = ""
-    			        	return
-    			        }
-    			        val, err := strconv.ParseInt(r.Value, 10, 64)
-                        if err != nil {
-                            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-                            return err
-                        }
-                        
-    			        ident.a += val
-    			    default:
-    			        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-    			        ident.isIndexed = false
-    			        ident.index = ""
-    			        return
-    			}
-			case *ast.BasicLit:
-			    switch r := i.Y.(type) {
-			    case *ast.Ident:
-			    
-			        if ident.isIndexed && ident.index != r.Name {
-    					err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-    					ident.isIndexed = false
-    					ident.index = ""
-    					return
-    				}
-    				ident.isIndexed = true
-    				ident.index = r.Name
-			        
-			        if l.Kind != token.INT{
-			            err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-			            ident.isIndexed = false
-			        	ident.index = ""
-			        	return
-			        }
-			        
-			        val, err := strconv.ParseInt(l.Value, 10, 64)
-                    if err != nil {
-                        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-                        return err
-                    }
-                    
-			        ident.a += val
-			    default:
-			        err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-			        ident.isIndexed = false
-			        ident.index = ""
-			        return
-			    }
-			//case *ast.BinaryExpr:
+	case *ast.BadExpr, *ast.Ellipsis, *ast.FuncLit, *ast.CompositeLit, *ast.SelectorExpr,
+		*ast.IndexExpr, *ast.SliceExpr, *ast.CallExpr, *ast.StarExpr, *ast.KeyValueExpr:
+		err = fmt.Errorf("Unresolved array index %T [%+v]\n", i, i)
+		return
+	case *ast.BasicLit:
+		if i.Kind != token.INT {
+			err = fmt.Errorf("Unresolved basic literal %T [%+v]\n", i, i)
+			return
+		}
+
+		// 0x4234?
+		val, err_atoi := strconv.Atoi(i.Value)
+		if err_atoi != nil {
+			err = fmt.Errorf("Unresolved basic literal %T [%+v]\n", i, i)
+			return
+		}
+
+		ac.b = val
+	case *ast.Ident:
+		ac.a = 1
+		id = i.Name
+	case *ast.ParenExpr:
+		ac, id, err = parseLinearIndex(i.X)
+	case *ast.UnaryExpr:
+		ac2, id2, err2 := parseLinearIndex(i.X)
+		if err2 != nil {
+			err = err2
+			return
+		}
+
+		switch i.Op {
+		case token.ADD:
+			ac = ac2
+			id = id2
+		case token.SUB:
+			ac.a = -ac2.a
+			ac.b = -ac2.b
+			id = id2
+		default:
+			err = fmt.Errorf("Unresolved unary operator %v\n", i.Op)
+			return
+		}
+	case *ast.BinaryExpr:
+		q_ac, q_id, q_err := parseLinearIndex(i.X)
+		if q_err != nil {
+			err = q_err
+			return
+		}
+		r_ac, r_id, r_err := parseLinearIndex(i.Y)
+		if r_err != nil {
+			err = r_err
+			return
+		}
+
+		if q_id == r_id && q_id != "" {
+			switch i.Op {
+			case token.ADD:
+				ac.a = q_ac.a + r_ac.a
+				ac.b = q_ac.b + r_ac.b
+				id = q_id
+			case token.SUB:
+				ac.a = q_ac.a - r_ac.a
+				ac.b = q_ac.b - r_ac.b
+				id = q_id
 			default:
-                err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-                return
-            }
-        default:
-		    err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
-		    return
-	    }
+				err = fmt.Errorf("Invalid binary operator %v\n", i.Op)
+				return
+			}
+		} else if q_id != r_id && q_id != "" && r_id != "" {
+			err = fmt.Errorf("Two identifiers in one expression %v %v\n", q_id, r_id)
+			return
+		} else if q_id == "" && r_id == "" {
+			switch i.Op {
+			case token.ADD:
+				ac.b = q_ac.b + r_ac.b
+			case token.SUB:
+				ac.b = q_ac.b - r_ac.b
+			case token.MUL:
+				ac.b = q_ac.b * r_ac.b
+			default:
+				err = fmt.Errorf("Unresolved binary operator %v\n", i.Op)
+				return
+			}
+			id = ""
+		} else if r_id == "" {
+			id = q_id
+			ac.a = q_ac.a
+
+			switch i.Op {
+			case token.ADD:
+				ac.b = q_ac.b + r_ac.b
+			case token.SUB:
+				ac.b = q_ac.b - r_ac.b
+			case token.MUL:
+				ac.a *= r_ac.b
+				ac.b = q_ac.b * r_ac.b
+			default:
+				err = fmt.Errorf("Unresolved binary operator %v\n", i.Op)
+				return
+			}
+		} else if q_id == "" {
+			id = r_id
+			ac.a = r_ac.a
+
+			switch i.Op {
+			case token.ADD:
+				ac.b = q_ac.b + r_ac.b
+			case token.SUB:
+				ac.a *= -1
+				ac.b = q_ac.b - r_ac.b
+			case token.MUL:
+				ac.a *= q_ac.b
+				ac.b = q_ac.b * r_ac.b
+			default:
+				err = fmt.Errorf("Unresolved binary operator %v\n", i.Op)
+				return
+			}
+		}
 	default:
-		err = fmt.Errorf("Unresolved array access %T [%+v]\n", i, i)
+		err = fmt.Errorf("Unresolved expression type %T [%+v]\n", i, i)
 		return
 	}
 	return
@@ -233,6 +253,8 @@ func parseLinearIndex(ident *Identifier, expr ast.Expr) (err error) {
 
 func AccessIdentBuild(group *IdentifierGroup, expr ast.Node, fn AccessExprFn) (err error) {
 	var ident Identifier
+	ident.isIndexed = false
+
 	// deal with pointers and addresses first
 	switch t := expr.(type) {
 	case *ast.StarExpr:
@@ -258,21 +280,31 @@ func AccessIdentBuild(group *IdentifierGroup, expr ast.Node, fn AccessExprFn) (e
 		// a[idx+1]
 		// e.X = a
 		// e.Index = idx+1
-		//AccessIdent(t.Index, ReadAccess)
+		if fn != nil {
+			fn(t.Index, ReadAccess)
+		}
+
 		switch x := t.X.(type) {
 		case *ast.Ident:
 			ident.id = x.Name
 		case *ast.SelectorExpr:
 			ident.id = x.Sel.Name
-			AccessIdentBuild(group, x.X, fn)
-		default:
-			err = fmt.Errorf("Unresolved array expression %T %+v", x, x)
+			err = AccessIdentBuild(group, x.X, fn)
+			if err != nil {
+				return
+			}
+		case *ast.IndexExpr:
+			err = AccessIdentBuild(group, x.X, fn)
+			return
 		}
-		if fn != nil {
-			fn(t.Index, ReadAccess)
+
+		ac, id, pli_err := parseLinearIndex(t.Index)
+		if pli_err == nil {
+			ident.index = id
+			ident.coeffs.a = ac.a
+			ident.coeffs.b = ac.b
+			ident.isIndexed = true
 		}
-		err = parseLinearIndex(&ident, t.Index)
-		
 	case *ast.CompositeLit:
 		// ignore, we're building a type expression, no accesses here
 	case *ast.CallExpr:
@@ -319,7 +351,7 @@ func (pass *AccessPass) ParseBasicBlock(blockNode ast.Node, p *Package) {
 	// - RecordAccess records the final identifier group
 	// - AccessIdentBuild takes an identifier group and an expression and
 	//     recursively builds the group out of the expression
-	// - AccessExpr 
+	// - AccessExpr
 	RecordAccess := func(ident *IdentifierGroup, t AccessType) {
 		ident.t = t
 		switch ident.group[0].id {
@@ -411,7 +443,7 @@ func (pass *AccessPass) ParseBasicBlock(blockNode ast.Node, p *Package) {
 			}
 			for _, paramGroup := range defines {
 				for _, param := range paramGroup.Names {
-					// check if the last argument is 
+					// check if the last argument is
 					Define(param.Name, paramGroup.Type)
 				}
 			}
